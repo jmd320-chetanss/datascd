@@ -7,6 +7,18 @@ _empty_logger = logging.getLogger("my_empty_logger")
 _empty_logger.addHandler(logging.NullHandler())
 
 
+def _are_keys_valid(
+    df: DataFrame | ConnectDataFrame,
+    key_cols: list[str],
+) -> bool:
+
+    # Check if key columns as composite key represent unique records
+    composite_key_check_df = df.groupBy(key_cols).count().filter("count > 1")
+
+    # If there are duplicate records, the count will not be 0
+    return composite_key_check_df.count() == 0
+
+
 def generate(
     spark_session: SparkSession,
     source_df: DataFrame | ConnectDataFrame,
@@ -37,11 +49,15 @@ def generate(
 
     assert isinstance(key_cols, list), "key_cols must be a list."
 
+    assert len(key_cols) > 0, "key_cols must not be empty."
+
     assert all(
         isinstance(col, str) for col in key_cols
     ), "All elements in key_cols must be strings."
 
-    assert key_cols, "key_cols must not be empty."
+    assert _are_keys_valid(
+        df=source_df, key_cols=key_cols
+    ), "Key columns represent duplicate records."
 
     special_cols = ["_effective_from", "_effective_to", "_reason", "_active"]
     all_cols = [col for col in source_df.columns if col not in special_cols]
