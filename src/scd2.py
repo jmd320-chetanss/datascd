@@ -24,7 +24,7 @@ def generate(
     source_df: DataFrame | ConnectDataFrame,
     target_df: DataFrame | ConnectDataFrame | None,
     key_cols: list[str],
-    log_analytics: bool = True,
+    log_analytics: bool = False,
     current_datetime: datetime = datetime.now(),
     logger: logging.Logger = _empty_logger,
 ):
