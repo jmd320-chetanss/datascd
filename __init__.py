@@ -1,1 +1,1 @@
-from src.scd2 import generate
+from src import scd2
