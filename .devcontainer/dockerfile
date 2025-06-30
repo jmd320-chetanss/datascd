@@ -10,5 +10,5 @@ RUN apt-get update \
     openjdk-17-jdk \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir \
-    pyspark
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
