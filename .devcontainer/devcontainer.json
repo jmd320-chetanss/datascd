@@ -1,6 +1,7 @@
 {
     "build": {
-        "dockerfile": "dockerfile"
+        "dockerfile": "dockerfile",
+        "context": ".."
     },
     "remoteUser": "root"
 }

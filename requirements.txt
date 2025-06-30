@@ -1,0 +1,11 @@
+gitdb==4.0.12
+GitPython==3.1.41
+iniconfig==2.1.0
+packaging==25.0
+pluggy==1.6.0
+py4j==0.10.9.9
+Pygments==2.19.2
+pyspark==4.0.0
+pytest==8.4.1
+setuptools==75.6.0
+smmap==5.0.2
