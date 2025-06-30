@@ -1,1 +1,1 @@
-from src import scd2
+from .src import scd2

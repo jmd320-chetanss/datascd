@@ -188,7 +188,7 @@ def generate(
             and { " and ".join([f"target_delete.{col} is null" for col in key_cols]) }
     """
 
-    logger.trace(f"Sql query to generate SCD2 target: {scd_sql}")
+    logger.debug(f"Sql query to generate SCD2 target: {scd_sql}")
     logger.info("Generating SCD2 target...")
 
     result_df = spark_session.sql(
@@ -209,7 +209,7 @@ def generate(
                 and _effective_from = {current_datetime_string}
         """
 
-        logger.trace(f"Sql query to find new records: {new_record_sql}")
+        logger.debug(f"Sql query to find new records: {new_record_sql}")
         logger.info("Finding new records...")
 
         new_record_count = spark_session.sql(
@@ -228,7 +228,7 @@ def generate(
                 and _effective_from = {current_datetime_string}
         """
 
-        logger.trace(f"Sql query to find modified records: {modified_record_sql}")
+        logger.debug(f"Sql query to find modified records: {modified_record_sql}")
         logger.info("Finding modified records...")
 
         modified_record_count = spark_session.sql(
@@ -247,7 +247,7 @@ def generate(
                 and _effective_to = {current_datetime_string}
         """
 
-        logger.trace(f"Sql query to find deleted records: {deleted_record_sql}")
+        logger.debug(f"Sql query to find deleted records: {deleted_record_sql}")
         logger.info("Finding deleted records...")
 
         deleted_record_count = spark_session.sql(
