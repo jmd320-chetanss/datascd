@@ -1,2 +1,14 @@
+[project]
+name = "datascd"
+version = "0.1.0"
+description = "Generate SCD tables"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+
+[build-system]
+requires = ["setuptools >= 77.0.3"]
+build-backend = "setuptools.build_meta"
+
 [tool.pytest.ini_options]
 pythonpath = ["."]
