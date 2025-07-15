@@ -62,7 +62,6 @@ def generate(
     special_cols = ["_effective_from", "_effective_to", "_reason", "_active"]
     all_cols = [col for col in source_df.columns if col not in special_cols]
     non_key_cols = [col for col in all_cols if col not in key_cols]
-    current_datetime_string = f"'{current_datetime}'"
 
     logger.debug(f"all_cols: {all_cols}")
     logger.debug(f"key_cols: {key_cols}")
@@ -74,11 +73,11 @@ def generate(
         target_df = spark_session.sql(
             f"""
                 select
-                    { ", ".join(all_cols) }
-                    , null as _effective_from
-                    , null as _effective_to
-                    , null as _reason
-                    , null as _active
+                    {", ".join(all_cols)}
+                    , cast(null as timestamp) as _effective_from
+                    , cast(null as timestamp) as _effective_to
+                    , cast(null as string) as _reason
+                    , cast(null as boolean) as _active
                 from {{source}}
                 where false
             """,
@@ -89,8 +88,9 @@ def generate(
     # updated records modified and added and deleted records marked deleted
     scd_sql = f"""
         with source as (
-            select { ", ".join(all_cols) } from {{in_source}}
+            select {", ".join(all_cols)} from {{in_source}}
         ),
+
         target as (
             select * from {{in_target}}
         ),
@@ -99,15 +99,15 @@ def generate(
         source_new as (
             select source.*
             from source
-            left join target on { " and ".join([f"source.{col} = target.{col}" for col in key_cols]) }
-            where { " and ".join([f"target.{col} is null" for col in key_cols]) }
+            left join target on {" and ".join([f"source.{col} = target.{col}" for col in key_cols])}
+            where {" and ".join([f"target.{col} is null" for col in key_cols])}
         ),
 
         -- Records in source that are present in target and have been modified
         source_modified as (
             select source.*
             from source
-            inner join target on { " and ".join([f"source.{col} = target.{col}" for col in key_cols]) }
+            inner join target on {" and ".join([f"source.{col} = target.{col}" for col in key_cols])}
             -- compare against the active records only
             where target._active is true
                 {
@@ -123,17 +123,17 @@ def generate(
         target_delete as (
             select target.*
             from target
-            left join source on { " and ".join([f"source.{col} = target.{col}" for col in key_cols]) }
+            left join source on {" and ".join([f"source.{col} = target.{col}" for col in key_cols])}
             -- Compare against the active records only
             where target._active is true
-                and ({ " and ".join([f"source.{col} is null" for col in key_cols]) })
+                and ({" and ".join([f"source.{col} is null" for col in key_cols])})
         )
 
         -- Pick all the new records from source and mark them as new
         select
             *
-            , {current_datetime_string} as _effective_from
-            , null as _effective_to
+            , cast('{current_datetime}' as timestamp) as _effective_from
+            , cast(null as timestamp) as _effective_to
             , 'New' as _reason
             , true as _active
         from source_new
@@ -142,37 +142,37 @@ def generate(
 
         -- Pick all the records from target that have been deleted and mark them as deleted
         select
-            { ", ".join(f"target.{col}" for col in all_cols) }
+            {", ".join(f"target.{col}" for col in all_cols)}
             , target._effective_from
-            , {current_datetime_string} as _effective_to
+            , cast('{current_datetime}' as timestamp) as _effective_to
             , 'Delete' as _reason
             , false as _active
         from target_delete
-        inner join target on { " and ".join([f"target.{col} = target_delete.{col}" for col in key_cols]) }
+        inner join target on {" and ".join([f"target.{col} = target_delete.{col}" for col in key_cols])}
 
         union all
 
         -- Pick all the records from target that have been modified and mark them as deleted
         select
-            { ", ".join(f"target.{col}" for col in all_cols) }
+            {", ".join(f"target.{col}" for col in all_cols)}
             , target._effective_from
 
             -- if the old record has been deleted and a new record comes with the same id,
             -- dont't overwrite the end date and reason of the old record
-            , coalesce(target._effective_to, {current_datetime_string}) as _effective_to
+            , coalesce(target._effective_to, cast('{current_datetime}' as timestamp)) as _effective_to
             , case when target._active is false then target._reason else 'Update' end as _reason
 
             , false as _active
         from source_modified
-        inner join target on { " and ".join([f"target.{col} = source_modified.{col}" for col in key_cols]) }
+        inner join target on {" and ".join([f"target.{col} = source_modified.{col}" for col in key_cols])}
 
         union all
 
         -- Pick all the records from source that have been modified and mark them as updated
         select
             *
-            , {current_datetime_string} as _effective_from
-            , null as _effective_to
+            , cast('{current_datetime}' as timestamp) as _effective_from
+            , cast(null as timestamp) as _effective_to
             , 'Update' as _reason
             , true as _active
         from source_modified
@@ -182,10 +182,10 @@ def generate(
         -- Pick all the remaining (old, unmodified and active) records from target
         select target.*
         from target
-        left join source_modified on { " and ".join([f"target.{col} = source_modified.{col}" for col in key_cols]) }
-        left join target_delete on { " and ".join([f"target.{col} = target_delete.{col}" for col in key_cols]) }
-        where { " and ".join([f"source_modified.{col} is null" for col in key_cols]) }
-            and { " and ".join([f"target_delete.{col} is null" for col in key_cols]) }
+        left join source_modified on {" and ".join([f"target.{col} = source_modified.{col}" for col in key_cols])}
+        left join target_delete on {" and ".join([f"target.{col} = target_delete.{col}" for col in key_cols])}
+        where {" and ".join([f"source_modified.{col} is null" for col in key_cols])}
+            and {" and ".join([f"target_delete.{col} is null" for col in key_cols])}
     """
 
     logger.debug(f"Sql query to generate SCD2 target: {scd_sql}")
@@ -206,7 +206,7 @@ def generate(
             select count(*) as count
             from {{result}}
             where _reason = 'New'
-                and _effective_from = {current_datetime_string}
+                and _effective_from = '{current_datetime}'
         """
 
         logger.debug(f"Sql query to find new records: {new_record_sql}")
@@ -225,10 +225,11 @@ def generate(
             select count(*) as count
             from {{result}}
             where _reason = 'Update'
-                and _effective_from = {current_datetime_string}
+                and _effective_from = '{current_datetime}'
         """
 
-        logger.debug(f"Sql query to find modified records: {modified_record_sql}")
+        logger.debug(
+            f"Sql query to find modified records: {modified_record_sql}")
         logger.info("Finding modified records...")
 
         modified_record_count = spark_session.sql(
@@ -244,10 +245,11 @@ def generate(
             select count(*) as count
             from {{result}}
             where _reason = 'Delete'
-                and _effective_to = {current_datetime_string}
+                and _effective_to = '{current_datetime}'
         """
 
-        logger.debug(f"Sql query to find deleted records: {deleted_record_sql}")
+        logger.debug(
+            f"Sql query to find deleted records: {deleted_record_sql}")
         logger.info("Finding deleted records...")
 
         deleted_record_count = spark_session.sql(
