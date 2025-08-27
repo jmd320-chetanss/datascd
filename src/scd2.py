@@ -1,10 +1,16 @@
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.connect.dataframe import DataFrame as ConnectDataFrame
+from pyspark.sql import functions as spf
 from datetime import datetime
+from typing import Literal
 import logging
 
 _empty_logger = logging.getLogger("my_empty_logger")
 _empty_logger.addHandler(logging.NullHandler())
+
+SPECIAL_COLS = ["_effective_from", "_effective_to", "_reason", "_active"]
+
+SchemaChangeHandleStrategy = Literal["error", "update"]
 
 
 def _are_keys_valid(
@@ -24,6 +30,7 @@ def generate(
     source_df: DataFrame | ConnectDataFrame,
     target_df: DataFrame | ConnectDataFrame | None,
     key_cols: list[str],
+    schema_change_handle_strategy: SchemaChangeHandleStrategy = "update",
     log_analytics: bool = False,
     current_datetime: datetime = datetime.now(),
     logger: logging.Logger = _empty_logger,
@@ -38,6 +45,10 @@ def generate(
         target_df: The target dataframe. If None, a new dataframe will be created.
         key_cols: A list of columns that uniquely identify a record.
     """
+
+    # ----------------------------------------------------------------------------------------------
+    # Input validation
+    # ----------------------------------------------------------------------------------------------
 
     assert isinstance(
         source_df, (DataFrame, ConnectDataFrame)
@@ -55,44 +66,139 @@ def generate(
         isinstance(col, str) for col in key_cols
     ), "All elements in key_cols must be strings."
 
+    assert all(col in source_df.columns for col in key_cols), \
+        "All key_cols must be present in source_df."
+
     assert _are_keys_valid(
         df=source_df, key_cols=key_cols
     ), "Key columns represent duplicate records."
 
-    special_cols = ["_effective_from", "_effective_to", "_reason", "_active"]
-    all_cols = [col for col in source_df.columns if col not in special_cols]
-    non_key_cols = [col for col in all_cols if col not in key_cols]
+    assert not any(col in SPECIAL_COLS for col in source_df.columns), \
+        f"Source dataframe must not contain '{SPECIAL_COLS}' columns."
 
-    logger.debug(f"all_cols: {all_cols}")
-    logger.debug(f"key_cols: {key_cols}")
-    logger.debug(f"non_key_cols: {non_key_cols}")
-    logger.debug(f"special_cols: {special_cols}")
-    logger.debug(f"current_datetime: {current_datetime}")
+    if target_df is not None:
+
+        assert all(col in target_df.columns for col in key_cols), \
+            "All key_cols must be present in target_df."
+
+        assert all(col in target_df.columns for col in SPECIAL_COLS), \
+            f"Target dataframe must contain '{SPECIAL_COLS}' columns."
+
+    # ----------------------------------------------------------------------------------------------
+    # SCD2 Generation
+    # ----------------------------------------------------------------------------------------------
+
+    logger.debug(f"Key cols: {key_cols}")
+    logger.debug(f"Timestamp: {current_datetime}")
+    logger.debug(f"Source cols: {source_df.columns}")
 
     if target_df is None:
+        cols = source_df.columns
+
         target_df = spark_session.sql(
             f"""
-                select
-                    {", ".join(all_cols)}
-                    , cast(null as timestamp) as _effective_from
-                    , cast(null as timestamp) as _effective_to
-                    , cast(null as string) as _reason
-                    , cast(null as boolean) as _active
-                from {{source}}
-                where false
+            select
+                {", ".join(cols)}
+                , cast(null as timestamp) as _effective_from
+                , cast(null as timestamp) as _effective_to
+                , cast(null as string) as _reason
+                , cast(null as boolean) as _active
+            from {{source}}
+            where false
             """,
             source=source_df,
         )
+
+    else:
+        logger.debug(f"Target cols: {target_df.columns}")
+
+        cols = [col for col in source_df.columns if col in target_df.columns]
+
+        # ------------------------------------------------------------------------------------------
+        # Handle schema changes, new columns found in source not present in target
+        # ------------------------------------------------------------------------------------------
+
+        source_cols_not_in_target_cols = [
+            col for col in source_df.columns
+            if col not in target_df.columns
+        ]
+
+        if source_cols_not_in_target_cols:
+
+            logger.info(f"New columns found: {source_cols_not_in_target_cols}")
+
+            match schema_change_handle_strategy:
+                case "error":
+                    raise ValueError(
+                        f"Source dataframe contains columns not present in target dataframe: {source_cols_not_in_target_cols}"
+                        f"Hint: Use schema_change_handle_strategy='update' to add the new columns to the target dataframe."
+                    )
+
+                case "update":
+                    logger.info("All new columns added to target dataframe.")
+
+                    cols += source_cols_not_in_target_cols
+
+                    target_df = target_df.withColumns(
+                        {col: spf.lit(None) for col in source_cols_not_in_target_cols}
+                    )
+
+        # ------------------------------------------------------------------------------------------
+        # Handle schema changes, columns found in target not present in source
+        # ------------------------------------------------------------------------------------------
+
+        target_cols_not_in_source_cols = [
+            col for col in target_df.columns
+            if col not in source_df.columns
+            and not col in SPECIAL_COLS
+        ]
+
+        if target_cols_not_in_source_cols:
+
+            logger.info(
+                f"Deleted columns found: {target_cols_not_in_source_cols}")
+
+            match schema_change_handle_strategy:
+                case "error":
+                    raise ValueError(
+                        f"Target dataframe contains columns not present in source dataframe: {target_cols_not_in_source_cols}"
+                        f"Hint: Use schema_change_handle_strategy='update' to hanlde the deleted columns from the source dataframe."
+                    )
+
+                case "update":
+                    logger.info(
+                        "All deleted columns added to source dataframe with null values.")
+
+                    cols += target_cols_not_in_source_cols
+
+                    source_df = source_df.withColumns(
+                        {col: spf.lit(None) for col in target_cols_not_in_source_cols}
+                    )
+
+    # ----------------------------------------------------------------------------------------------
+    # SCD2 Implementation
+    # ----------------------------------------------------------------------------------------------
+
+    logger.debug(f"Final cols: {cols}")
+
+    non_key_cols = [col for col in cols if col not in key_cols]
+    logger.debug(f"Non key cols: {non_key_cols}")
 
     # Sql query to generate target table with all the new records added,
     # updated records modified and added and deleted records marked deleted
     scd_sql = f"""
         with source as (
-            select {", ".join(all_cols)} from {{in_source}}
+            select {", ".join(cols)} from {{in_source}}
         ),
 
         target as (
-            select * from {{in_target}}
+            select {", ".join(cols)},
+                _effective_from,
+                _effective_to,
+                _reason,
+                _active
+
+            from {{in_target}}
         ),
 
         -- Records in source that are not present in target
@@ -110,13 +216,7 @@ def generate(
             inner join target on {" and ".join([f"source.{col} = target.{col}" for col in key_cols])}
             -- compare against the active records only
             where target._active is true
-                {
-                    (
-                        " and ("
-                        + " or ".join([f"source.{col} != target.{col}" for col in non_key_cols])
-                        + ")"
-                    ) if non_key_cols else ""
-                }
+                {" and (" + " or ".join([f"source.{col} is distinct from target.{col}" for col in non_key_cols]) + ")" if non_key_cols else ""}
         ),
 
         -- Records in target that are not present in source
@@ -142,7 +242,7 @@ def generate(
 
         -- Pick all the records from target that have been deleted and mark them as deleted
         select
-            {", ".join(f"target.{col}" for col in all_cols)}
+            {", ".join(f"target.{col}" for col in cols)}
             , target._effective_from
             , cast('{current_datetime}' as timestamp) as _effective_to
             , 'Delete' as _reason
@@ -154,7 +254,7 @@ def generate(
 
         -- Pick all the records from target that have been modified and mark them as deleted
         select
-            {", ".join(f"target.{col}" for col in all_cols)}
+            {", ".join(f"target.{col}" for col in cols)}
             , target._effective_from
 
             -- if the old record has been deleted and a new record comes with the same id,
